@@ -1,25 +1,48 @@
 #include <avr/pgmspace.h>
 
+#define PIN LED_BUILTIN
+
 // the setup function runs once when you press reset or power the board
 void setup() {
   // initialize digital pin LED_BUILTIN as an output.
-  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(PIN, OUTPUT);
 }
 
-void playSampleBuffer(const char* data, unsigned int length, int sampleRate) {
-  long tenthMicrosPerPeriod = 10000000 / sampleRate; // sample period in tenth of micro seconds
-  // each loop iteration must have identical timing for this to be accurate
-  long tenthMicrosPerLoop = 63; // pretty accurate with this value; needs manual calibration; cannot use micros() with noInterupts()
+// because our bit-level sampling rate matters for noise, we use direct HW access for speed
+#if 1  // fast version using direct hardware access
+#define PIN_PORT (( (PIN)<8 ? PORTD : PORTB   )) // hoping the compiler folds that a compile-time
+#define PIN_BIT  (( (PIN)<8 ? (PIN) : (PIN-8) ))
+#define PIN_MASK (1 << (PIN_BIT))
+#define getPortVal() (PIN_PORT & ~(PIN_MASK))    // read out old value at start, outside of loop
+#define writeBit(bit, oldPortVal) ((PIN_PORT = (oldPortVal) | ((PIN_MASK) & -bit)))
+#else  // slow version calling digitalWrite()
+#define getPortVal() (0) // not used
+#define writeBit(bit, oldPortVal) (digitalWrite(PIN, (bit)))
+#endif
+
+// plays an audio sample through a single-bit port using sigma-delta coding
+void playSampleBuffer(const char* data/*in PROGMEM*/, unsigned int length, int sampleRate) {
+  // Because interrupts cause audio artifacts, but micros() does not work with noInterrupt(),
+  // we must time this manually. The following variable is the length of one loop iteration,
+  // in tenth of microseconds (100 ns). It has been manually tuned (approximately).
+  const long tenthMicrosPerLoop = 36;
+  const long tenthMicrosPerPeriod = 10000000 / sampleRate; // sample period in tenth of micro seconds
   noInterrupts();
-  long tenthMicros = 0;
-  int residual = 0; // needs 8 bits
+  long tenthMicros = 0;  // how many tenth of microseconds have elapsed within this sample period?
+  char residual = 0;     // current aggregate quantization error
+  const unsigned char oldPortVal = getPortVal();
   for (unsigned int t = 0; t < length; tenthMicros += tenthMicrosPerLoop) {
-    int sampleValue = (char)pgm_read_byte(data + t % length);
-    sampleValue += residual; // needs 9 bits
-    int outBit = (sampleValue >= 0);
-    digitalWrite(LED_BUILTIN, outBit);
-    int outValue = (254 & -outBit) - 127;
-    residual = sampleValue - outValue;
+    // note: the loop body was written without conditionals in order to ensure constant timing
+
+    // produce one bit
+    int sampleValue = (char)pgm_read_byte(data + t); // sample value to output (stored in EEPROM=PROGMEM)
+    sampleValue += residual;                  // incorporate error from last sample (note: we need 9 bits here, hence 'int')
+    char outBit = (sampleValue >= 0);         // quantize to 1 bit
+    writeBit(outBit, oldPortVal);             // send to digital port
+    char outValue = (254 & -outBit) - 127;    // convert bit to actual value (127 or -127) (note: avoid multiplication or conditional)
+    residual = (char)sampleValue - outValue;  // compute quantization error of this step (note: guaranteed to fit into 8 bits)
+
+    // advance the time index if the time duration of a sample period has elapsed
     int advance = tenthMicros > tenthMicrosPerPeriod;
     tenthMicros -= tenthMicrosPerPeriod & -advance;
     t += advance;
@@ -3778,5 +3801,5 @@ const int audioSampleRate = 8000;
 // the loop function runs over and over again forever
 void loop() {
   playSampleBuffer(audioData, audioLength, audioSampleRate);
-  for(;;);
+  for(;;); // loop forever, since we want to play the sample only once
 }
