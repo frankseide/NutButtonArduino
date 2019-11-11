@@ -22,14 +22,16 @@ void setup() {
 
 // plays an audio sample through a single-bit port using sigma-delta coding
 void playSampleBuffer(const char* data/*in PROGMEM*/, unsigned int length, int sampleRate) {
-  // Because interrupts cause audio artifacts, but micros() does not work with noInterrupt(),
+  // because interrupts cause audio artifacts, but micros() does not work with noInterrupt(),
   // we must time this manually. The following variable is the length of one loop iteration,
-  // in tenth of microseconds (100 ns). It has been manually tuned (approximately).
-  const long tenthMicrosPerLoop = 36;
-  const long tenthMicrosPerPeriod = 10000000 / sampleRate; // sample period in tenth of micro seconds
+  // in tenth of microseconds (100 ns). It has been manually tuned (approximately)
+  const int tenthMicrosPerLoop = 29;
+  const int tenthMicrosPerPeriod = 10000000 / sampleRate; // sample period in tenth of micro seconds
+  // note: if tenthMicrosPerLoop * tenthMicrosPerPeriod exceeds 16 bits, then type should be 'long'
+
   noInterrupts();
-  long tenthMicros = 0;  // how many tenth of microseconds have elapsed within this sample period?
-  char residual = 0;     // current aggregate quantization error
+  int tenthMicros = 0;  // how many tenth of microseconds have elapsed within this sample period?
+  char residual = 0;    // current aggregate quantization error
   const unsigned char oldPortVal = getPortVal();
   for (unsigned int t = 0; t < length; tenthMicros += tenthMicrosPerLoop) {
     // note: the loop body was written without conditionals in order to ensure constant timing
